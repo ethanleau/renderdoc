@@ -2147,6 +2147,7 @@
   <ItemGroup>
     <Natvis Include="python36.natvis" />
   </ItemGroup>
+  <Import Project="$(SolutionDir)\util\YeeCapture.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
   <ItemGroup>

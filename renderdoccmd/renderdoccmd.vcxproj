@@ -221,6 +221,7 @@
       <Project>{257fd75c-4d17-4a23-a754-23bfd85887a0}</Project>
     </ProjectReference>
   </ItemGroup>
+  <Import Project="$(SolutionDir)\util\YeeCapture.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

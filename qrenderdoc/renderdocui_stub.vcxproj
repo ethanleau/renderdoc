@@ -21,8 +21,8 @@
   <PropertyGroup Label="Globals">
     <ProjectGuid>{37955C79-D91D-423F-8C6C-8F5BCF4F28D4}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
-    <RootNamespace>renderdocui_stub</RootNamespace>
-    <ProjectName>renderdocui_stub</ProjectName>
+    <RootNamespace>yeecaptureui_stub</RootNamespace>
+    <ProjectName>yeecaptureui_stub</ProjectName>
   </PropertyGroup>
   <Import Project="$(SolutionDir)\util\WindowsSDKTarget.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -82,6 +82,7 @@
   <ItemGroup>
     <ResourceCompile Include="..\renderdoccmd\renderdoccmd.rc" />
   </ItemGroup>
+  <Import Project="$(SolutionDir)\util\YeeCapture.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

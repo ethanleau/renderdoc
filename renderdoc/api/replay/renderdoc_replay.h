@@ -47,10 +47,16 @@
 
 // this #define can be used to mark a program as a 'replay' program which should not be captured.
 // Any program used for such purpose must define and export this symbol in the main exe or one dll
-// that will be loaded before renderdoc.dll is loaded.
-#define REPLAY_PROGRAM_MARKER()                                                 \
-  extern "C" RENDERDOC_EXPORT_API void RENDERDOC_CC renderdoc__replay__marker() \
-  {                                                                             \
+// that will be loaded before the core capture DLL is loaded.
+#ifndef RDOC_BASE_NAME
+#define RDOC_BASE_NAME renderdoc
+#endif
+#define RDOC_REPLAY_MARKER_CONCAT_INNER(base) base##__replay__marker
+#define RDOC_REPLAY_MARKER_CONCAT(base) RDOC_REPLAY_MARKER_CONCAT_INNER(base)
+#define REPLAY_PROGRAM_MARKER()                                                        \
+  extern "C" RENDERDOC_EXPORT_API void RENDERDOC_CC RDOC_REPLAY_MARKER_CONCAT(        \
+      RDOC_BASE_NAME)()                                                                \
+  {                                                                                    \
   }
 // declare ResourceId extremely early so that it can be referenced in structured_data.h
 

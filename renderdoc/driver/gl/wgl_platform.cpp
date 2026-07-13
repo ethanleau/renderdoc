@@ -25,7 +25,7 @@
 #include "gl_common.h"
 #include "wgl_dispatch_table.h"
 
-#define WINDOW_CLASS_NAME L"renderdocGLclass"
+#define WINDOW_CLASS_NAME L"yeecaptureGLclass"
 
 class WGLPlatform : public GLPlatform
 {
@@ -418,7 +418,7 @@ class WGLPlatform : public GLPlatform
     pfd.cDepthBits = 0;
     pfd.cStencilBits = 0;
 
-    w = CreateWindowEx(WS_EX_CLIENTEDGE, WINDOW_CLASS_NAME, L"RenderDoc replay window",
+    w = CreateWindowEx(WS_EX_CLIENTEDGE, WINDOW_CLASS_NAME, L"YeeCapture replay window",
                        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 32, 32, NULL, NULL,
                        GetModuleHandle(NULL), NULL);
 

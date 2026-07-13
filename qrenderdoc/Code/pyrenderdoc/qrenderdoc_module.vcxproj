@@ -155,6 +155,7 @@
     <ClInclude Include="..\Interface\QRDInterface.h" />
     <ClInclude Include="..\Interface\RemoteHost.h" />
   </ItemGroup>
+  <Import Project="$(SolutionDir)\util\YeeCapture.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ItemGroup>
     <ProjectTools Include="python_sheet" />

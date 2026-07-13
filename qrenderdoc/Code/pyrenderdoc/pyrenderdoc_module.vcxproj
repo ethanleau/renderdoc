@@ -151,6 +151,7 @@
       <Project>{e2b46d67-90e2-40b6-9597-72930e7845e5}</Project>
     </ProjectReference>
   </ItemGroup>
+  <Import Project="$(SolutionDir)\util\YeeCapture.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ItemGroup>
     <ProjectTools Include="python_sheet" />

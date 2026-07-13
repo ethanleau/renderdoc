@@ -547,7 +547,7 @@ DECLARE_REFLECTION_STRUCT(BugReport);
       "Defaults to ``True``."                                                                      \
       ""                                                                                           \
       ":type: bool");                                                                              \
-  CONFIG_SETTING_VAL(public, bool, bool, CheckUpdate_AllowChecks, true)                            \
+  CONFIG_SETTING_VAL(public, bool, bool, CheckUpdate_AllowChecks, false)                           \
                                                                                                    \
   DOCUMENT(                                                                                        \
       "``True`` if an update to a newer version is currently available.\n"                         \

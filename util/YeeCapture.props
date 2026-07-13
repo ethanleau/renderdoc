@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Central Windows branding for the YeeCapture build. Public RenderDoc APIs stay unchanged. -->
+  <PropertyGroup>
+    <YeeCaptureProductName>YeeCapture</YeeCaptureProductName>
+    <YeeCaptureCoreBaseName>yeecapture</YeeCaptureCoreBaseName>
+    <YeeCaptureUIName>qyeecapture</YeeCaptureUIName>
+    <YeeCaptureElevatedUIName>yeecaptureui</YeeCaptureElevatedUIName>
+    <YeeCaptureCommandName>yeecapturecmd</YeeCaptureCommandName>
+    <YeeCaptureShimName>yeecaptureshim</YeeCaptureShimName>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(MSBuildProjectName)'=='renderdoc'">
+    <TargetName>$(YeeCaptureCoreBaseName)</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(MSBuildProjectName)'=='qrenderdoc_local'">
+    <PrimaryOutput>$(YeeCaptureUIName)</PrimaryOutput>
+    <TargetName>$(YeeCaptureUIName)</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(MSBuildProjectName)'=='renderdocui_stub'">
+    <PrimaryOutput>$(YeeCaptureElevatedUIName)</PrimaryOutput>
+    <TargetName>$(YeeCaptureElevatedUIName)</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(MSBuildProjectName)'=='renderdoccmd'">
+    <TargetName>$(YeeCaptureCommandName)</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(MSBuildProjectName)'=='renderdocshim' and '$(Platform)'=='x64'">
+    <TargetName>$(YeeCaptureShimName)64</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(MSBuildProjectName)'=='renderdocshim' and '$(Platform)'=='Win32'">
+    <TargetName>$(YeeCaptureShimName)32</TargetName>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <!-- Keep validation builds truly serial. Several projects enable /MP independently of /m:1. -->
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+      <PreprocessorDefinitions>RDOC_BASE_NAME=$(YeeCaptureCoreBaseName);YEECAPTURE_BRANDED_BUILD=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(MSBuildProjectName)'=='renderdocui_stub'">
+    <ClCompile>
+      <PreprocessorDefinitions>YEECAPTURE_UI_STUB=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>YEECAPTURE_UI_STUB=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ResourceCompile>
+    <Link>
+      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>
