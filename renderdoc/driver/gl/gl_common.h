@@ -29,6 +29,12 @@
 #include "core/core.h"
 #include "maths/vec.h"
 
+#if defined(YEECAPTURE_BRANDED_BUILD)
+#define RDOC_OPENGL_TOOL_NAME "YeeCapture"
+#else
+#define RDOC_OPENGL_TOOL_NAME "RenderDoc"
+#endif
+
 // typed enum so that templates will pick up specialisations
 // header must be included before the official headers, so we/
 // separate it out to avoid clang-format sorting them differently

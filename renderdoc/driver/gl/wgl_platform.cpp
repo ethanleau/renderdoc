@@ -397,8 +397,9 @@ class WGLPlatform : public GLPlatform
       WGL.wglDeleteContext(rc);
       ReleaseDC(w, dc);
       DestroyWindow(w);
-      RETURN_ERROR_RESULT(ResultCode::APIHardwareUnsupported,
-                          "RenderDoc requires WGL_ARB_create_context and WGL_ARB_pixel_format");
+      RETURN_ERROR_RESULT(
+          ResultCode::APIHardwareUnsupported,
+          RDOC_OPENGL_TOOL_NAME " requires WGL_ARB_create_context and WGL_ARB_pixel_format");
     }
 
     WGL.wglMakeCurrent(NULL, NULL);
@@ -475,7 +476,8 @@ class WGLPlatform : public GLPlatform
       DestroyWindow(w);
       RETURN_ERROR_RESULT(
           ResultCode::APIHardwareUnsupported,
-          "Couldn't create at least 3.2 context - RenderDoc requires OpenGL 3.2 availability");
+          "Couldn't create at least 3.2 context - " RDOC_OPENGL_TOOL_NAME
+          " requires OpenGL 3.2 availability");
     }
 
     GLCoreVersion = major * 10 + minor;
