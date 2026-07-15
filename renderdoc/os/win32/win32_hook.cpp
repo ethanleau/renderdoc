@@ -161,6 +161,160 @@ struct CachedHookData
 
   int32_t posthooking = 0;
 
+  bool ApplyDelayHooks(const char *modName, HMODULE module, byte *baseAddress,
+                       PIMAGE_OPTIONAL_HEADER optHeader)
+  {
+    const IMAGE_DATA_DIRECTORY &delayDir =
+        optHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
+
+    if(delayDir.VirtualAddress == 0 || delayDir.Size < sizeof(IMAGE_DELAYLOAD_DESCRIPTOR))
+      return true;
+
+    IMAGE_DELAYLOAD_DESCRIPTOR *delayDesc =
+        (IMAGE_DELAYLOAD_DESCRIPTOR *)(baseAddress + delayDir.VirtualAddress);
+    const size_t descriptorCount = delayDir.Size / sizeof(IMAGE_DELAYLOAD_DESCRIPTOR);
+    const uintptr_t imageStart = (uintptr_t)baseAddress;
+    const uintptr_t imageEnd = imageStart + optHeader->SizeOfImage;
+
+    auto inImage = [imageStart, imageEnd](const void *ptr, size_t size) {
+      uintptr_t start = (uintptr_t)ptr;
+      return start >= imageStart && start <= imageEnd && size <= imageEnd - start;
+    };
+
+    struct hook_find
+    {
+      bool operator()(const FunctionHook &a, const char *b)
+      {
+        return strcmp(a.function.c_str(), b) < 0;
+      }
+    };
+
+    for(size_t descriptor = 0; descriptor < descriptorCount; descriptor++, delayDesc++)
+    {
+      if(delayDesc->DllNameRVA == 0)
+        break;
+
+      // Version 1 delay imports contain absolute 32-bit addresses. They can't describe a 64-bit
+      // image and are vanishingly rare, but retain support for 32-bit targets.
+#if ENABLED(RDOC_X64)
+      if(!delayDesc->Attributes.RvaBased)
+        continue;
+#endif
+
+      auto delayAddress = [baseAddress, delayDesc](DWORD address) -> byte * {
+        if(address == 0)
+          return NULL;
+
+        if(delayDesc->Attributes.RvaBased)
+          return baseAddress + address;
+
+        return (byte *)(uintptr_t)address;
+      };
+
+      const char *dllName = (const char *)delayAddress(delayDesc->DllNameRVA);
+      IMAGE_THUNK_DATA *origFirst =
+          (IMAGE_THUNK_DATA *)delayAddress(delayDesc->ImportNameTableRVA);
+      IMAGE_THUNK_DATA *first =
+          (IMAGE_THUNK_DATA *)delayAddress(delayDesc->ImportAddressTableRVA);
+
+      if(dllName == NULL || origFirst == NULL || first == NULL ||
+         !inImage(dllName, sizeof(char)) || !inImage(origFirst, sizeof(IMAGE_THUNK_DATA)) ||
+         !inImage(first, sizeof(IMAGE_THUNK_DATA)))
+        continue;
+
+      DllHookset *hookset = NULL;
+
+      for(auto it = DllHooks.begin(); it != DllHooks.end(); ++it)
+        if(!_stricmp(it->first.c_str(), dllName))
+          hookset = &it->second;
+
+      if(hookset == NULL)
+        continue;
+
+      while(inImage(origFirst, sizeof(IMAGE_THUNK_DATA)) &&
+            inImage(first, sizeof(IMAGE_THUNK_DATA)) && origFirst->u1.AddressOfData)
+      {
+        const char *importName = NULL;
+
+#if ENABLED(RDOC_X64)
+        bool importByOrdinal = IMAGE_SNAP_BY_ORDINAL64(origFirst->u1.AddressOfData) != FALSE;
+#else
+        bool importByOrdinal = IMAGE_SNAP_BY_ORDINAL32(origFirst->u1.AddressOfData) != FALSE;
+#endif
+
+        if(importByOrdinal)
+        {
+          WORD ordinal = IMAGE_ORDINAL64(origFirst->u1.AddressOfData);
+
+          if(!hookset->OrdinalNames.empty() && ordinal >= hookset->OrdinalBase)
+          {
+            DWORD nameIndex = ordinal - hookset->OrdinalBase;
+            if(nameIndex < hookset->OrdinalNames.size())
+              importName = hookset->OrdinalNames[nameIndex].c_str();
+          }
+          else if(hookset->OrdinalNames.empty())
+          {
+            missedOrdinals = true;
+          }
+        }
+        else
+        {
+          IMAGE_IMPORT_BY_NAME *import =
+              (IMAGE_IMPORT_BY_NAME *)delayAddress((DWORD)origFirst->u1.AddressOfData);
+          if(inImage(import, sizeof(IMAGE_IMPORT_BY_NAME)))
+            importName = (const char *)import->Name;
+        }
+
+        if(importName)
+        {
+          auto found = std::lower_bound(hookset->FunctionHooks.begin(),
+                                        hookset->FunctionHooks.end(), importName, hook_find());
+
+          if(found != hookset->FunctionHooks.end() &&
+             !strcmp(found->function.c_str(), importName) && ownmodule != module)
+          {
+            void **IATentry = (void **)&first->u1.Function;
+            void *current = *IATentry;
+
+            // An unresolved delay-IAT slot points at the importing module's helper thunk. Only
+            // replace slots that have been resolved to the real export, otherwise the delay-load
+            // helper can overwrite our hook immediately afterwards.
+            bool resolved = current == found->hook;
+
+            if(!resolved && found->orig && *found->orig)
+              resolved = current == *found->orig;
+
+            if(!resolved && hookset->module)
+              resolved = current == GetProcAddress(hookset->module, importName);
+
+            for(size_t i = 0; !resolved && i < hookset->altmodules.size(); i++)
+              resolved = current == GetProcAddress(hookset->altmodules[i], importName);
+
+            if(resolved && current != found->hook)
+            {
+              bool already = false;
+              bool applied;
+              {
+                SCOPED_LOCK(lock);
+                applied = ApplyHook(*found, IATentry, already);
+              }
+
+              if(!applied)
+                return false;
+
+              RDCLOG("Patched delay-IAT in %s for %s!%s", modName, dllName, importName);
+            }
+          }
+        }
+
+        origFirst++;
+        first++;
+      }
+    }
+
+    return true;
+  }
+
   void ApplyHooks(const char *modName, HMODULE module)
   {
     char lowername[512] = {};
@@ -333,6 +487,15 @@ struct CachedHookData
     PIMAGE_FILE_HEADER fileHeader = (PIMAGE_FILE_HEADER)(PE00 + 4);
     PIMAGE_OPTIONAL_HEADER optHeader =
         (PIMAGE_OPTIONAL_HEADER)((BYTE *)fileHeader + sizeof(IMAGE_FILE_HEADER));
+
+    // Delay-loaded functions are stored in a separate directory and are not covered by the
+    // ordinary import scan below. Scan this first because the ordinary path deliberately returns
+    // early as soon as it encounters an already-installed hook.
+    if(!ApplyDelayHooks(modName, module, baseAddress, optHeader))
+    {
+      FreeLibrary(refcountModHandle);
+      return;
+    }
 
     DWORD iatOffset = optHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
 

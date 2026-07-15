@@ -27,7 +27,9 @@
 #include "core/core.h"
 #include "core/settings.h"
 #include "driver/d3d11/d3d11_hooks.h"
+#include "driver/d3d12/d3d12_command_queue.h"
 #include "driver/d3d12/d3d12_hooks.h"
+#include "driver/dxgi/dxgi_wrapped.h"
 #include "hooks/hooks.h"
 
 #include "driver/dx/official/d3d11.h"
@@ -93,6 +95,36 @@ void FilterDX12(AGSDX12ReturnedParams::ExtensionsSupported &extensionsSupported)
 }
 
 typedef HRESULT(__cdecl *PFN_AmdExtD3DCreateInterface)(IUnknown *, REFIID, void **);
+
+// FidelityFX API descriptors all begin with this common header. Keep these definitions local so the
+// compatibility hook doesn't take a dependency on a particular FidelityFX SDK version.
+struct FfxApiHeader
+{
+  uint64_t type;
+  FfxApiHeader *pNext;
+};
+
+// FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12
+struct FfxCreateBackendDX12Desc
+{
+  FfxApiHeader header;
+  ID3D12Device *device;
+};
+
+// FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_FOR_HWND_DX12
+struct FfxCreateFrameGenerationSwapChainForHwndDX12Desc
+{
+  FfxApiHeader header;
+  IDXGISwapChain4 **swapchain;
+  HWND hwnd;
+  DXGI_SWAP_CHAIN_DESC1 *desc;
+  DXGI_SWAP_CHAIN_FULLSCREEN_DESC *fullscreenDesc;
+  IDXGIFactory *dxgiFactory;
+  ID3D12CommandQueue *gameQueue;
+};
+
+typedef uint32_t(__cdecl *PFN_ffxCreateContext)(void **context, FfxApiHeader *desc,
+                                                const void *allocationCallbacks);
 
 // legacy interface before AGS 6.0. This isn't the real signature, see the hook definition for more
 // information
@@ -165,6 +197,29 @@ public:
 
     const char *ags_dll = BIT_SPECIFIC_DLL("amd_ags_x86.dll", "amd_ags_x64.dll");
     LibraryHooks::RegisterLibraryHook(ags_dll, NULL);
+
+    // Some titles load the FidelityFX API only after FSR frame generation is selected.
+    const char *ffx_dll = "amd_fidelityfx_dx12.dll";
+    LibraryHooks::RegisterLibraryHook(ffx_dll, FidelityFXLoaded);
+    ffxCreateContext.Register(ffx_dll, "ffxCreateContext", ffxCreateContext_hook);
+
+    // FidelityFX can be delay-loaded without passing through an import that RenderDoc patched.
+    // Watch briefly for that case and install the same guarded export hook used by the load
+    // callback. This thread only observes module state and exits as soon as the DLL appears.
+    Threading::ThreadHandle watcher = Threading::CreateThread([]() {
+      for(uint32_t i = 0; i < 300; i++)
+      {
+        if(Process::IsModuleLoaded("amd_fidelityfx_dx12.dll"))
+        {
+          void *module = Process::LoadModule("amd_fidelityfx_dx12.dll");
+          FidelityFXLoaded(module, "amd_fidelityfx_dx12.dll");
+          return;
+        }
+
+        Threading::Sleep(100);
+      }
+    });
+    Threading::DetachThread(watcher);
 
     // allowed through without interception:
     // agsDeInitialize, agsSetDisplayMode, agsDriverExtensionsDX11_WriteBreadcrumb
@@ -248,6 +303,147 @@ public:
 
 private:
   static AMDHook amdhooks;
+  static Threading::CriticalSection ffxHookLock;
+  static bool ffxInlineHookInstalled;
+
+  static bool InstallFidelityFXInlineHook(void *target)
+  {
+    SCOPED_LOCK(ffxHookLock);
+
+    if(ffxInlineHookInstalled)
+      return true;
+
+    if(target == NULL)
+      return false;
+
+#if ENABLED(RDOC_WIN32) && ENABLED(RDOC_X64)
+    // amd_fidelityfx_dx12.dll 1.x starts ffxCreateContext with four position-independent
+    // instructions totalling 15 bytes. Verify every byte before installing the hook so an SDK
+    // update can only disable this compatibility path, never patch an unknown prologue.
+    static const byte expectedPrologue[15] = {
+        0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c,
+        0x24, 0x20, 0x57, 0x48, 0x83, 0xec, 0x20,
+    };
+
+    if(memcmp(target, expectedPrologue, sizeof(expectedPrologue)) != 0)
+    {
+      RDCERR("FidelityFX ffxCreateContext has an unsupported prologue; inline hook disabled");
+      return false;
+    }
+
+    const size_t patchSize = sizeof(expectedPrologue);
+    const size_t absoluteJumpSize = 14;
+    byte *trampoline = (byte *)VirtualAlloc(NULL, patchSize + absoluteJumpSize,
+                                            MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if(trampoline == NULL)
+    {
+      RDCERR("Couldn't allocate FidelityFX ffxCreateContext trampoline");
+      return false;
+    }
+
+    memcpy(trampoline, target, patchSize);
+
+    byte jumpBack[absoluteJumpSize] = {0xff, 0x25, 0, 0, 0, 0};
+    *(void **)(jumpBack + 6) = (byte *)target + patchSize;
+    memcpy(trampoline + patchSize, jumpBack, absoluteJumpSize);
+
+    byte hookJump[absoluteJumpSize] = {0xff, 0x25, 0, 0, 0, 0};
+    *(void **)(hookJump + 6) = (void *)&ffxCreateContext_hook;
+
+    DWORD oldProtect = 0;
+    if(!VirtualProtect(target, patchSize, PAGE_EXECUTE_READWRITE, &oldProtect))
+    {
+      RDCERR("Couldn't make FidelityFX ffxCreateContext writable");
+      VirtualFree(trampoline, 0, MEM_RELEASE);
+      return false;
+    }
+
+    amdhooks.ffxCreateContext.SetFuncPtr(trampoline);
+    memcpy(target, hookJump, absoluteJumpSize);
+    *((byte *)target + absoluteJumpSize) = 0x90;
+    FlushInstructionCache(GetCurrentProcess(), target, patchSize);
+
+    DWORD dummy = 0;
+    VirtualProtect(target, patchSize, oldProtect, &dummy);
+
+    ffxInlineHookInstalled = true;
+    RDCLOG("Installed guarded FidelityFX ffxCreateContext inline hook target=%p trampoline=%p",
+           target, trampoline);
+    return true;
+#else
+    return false;
+#endif
+  }
+
+  static void FidelityFXLoaded(void *module, const char *)
+  {
+    void *target = Process::GetFunctionAddress(module, "ffxCreateContext");
+    InstallFidelityFXInlineHook(target);
+  }
+
+  HookedFunction<PFN_ffxCreateContext> ffxCreateContext;
+
+  static uint32_t __cdecl ffxCreateContext_hook(void **context, FfxApiHeader *desc,
+                                                const void *allocationCallbacks)
+  {
+    FfxCreateFrameGenerationSwapChainForHwndDX12Desc *swapchainDesc = NULL;
+    FfxCreateBackendDX12Desc *backendDesc = NULL;
+
+    size_t count = 0;
+    for(FfxApiHeader *header = desc; header && count < 16; header = header->pNext, count++)
+    {
+      if(header->type == 0x30006)
+        swapchainDesc = (FfxCreateFrameGenerationSwapChainForHwndDX12Desc *)header;
+      else if(header->type == 0x2)
+        backendDesc = (FfxCreateBackendDX12Desc *)header;
+    }
+
+    ID3D12CommandQueue *wrappedQueue = swapchainDesc ? swapchainDesc->gameQueue : NULL;
+    ID3D12Device *wrappedBackendDevice = backendDesc ? backendDesc->device : NULL;
+    ID3DDevice *presentationDevice = GetD3D12DeviceIfAlloc(wrappedQueue);
+    ID3DDevice *backendDevice = GetD3D12DeviceIfAlloc(wrappedBackendDevice);
+
+    if(swapchainDesc && presentationDevice)
+      swapchainDesc->gameQueue =
+          (ID3D12CommandQueue *)presentationDevice->GetRealIUnknown();
+    if(backendDesc && backendDevice)
+      backendDesc->device = (ID3D12Device *)backendDevice->GetRealIUnknown();
+
+    PFN_ffxCreateContext real = amdhooks.ffxCreateContext();
+    if(real == NULL)
+    {
+      RDCERR("FidelityFX ffxCreateContext hook has no real function pointer");
+      return 1;
+    }
+
+    uint32_t ret = real(context, desc, allocationCallbacks);
+
+    if(swapchainDesc)
+      swapchainDesc->gameQueue = wrappedQueue;
+    if(backendDesc)
+      backendDesc->device = wrappedBackendDevice;
+
+    if(ret == 0 && swapchainDesc && swapchainDesc->swapchain && *swapchainDesc->swapchain &&
+       presentationDevice)
+    {
+      IDXGISwapChain4 *realSwapchain = *swapchainDesc->swapchain;
+      WrappedIDXGISwapChain4 *wrappedSwapchain =
+          new WrappedIDXGISwapChain4(realSwapchain, swapchainDesc->hwnd, presentationDevice);
+
+      // The FFX frame-generation context treats the swapchain returned through this descriptor as
+      // a borrowed interface. Its caller releases the returned pointer after storing it, but FFX
+      // continues to issue ResizeBuffers/Present calls through that pointer. A normal RenderDoc
+      // swapchain starts with one caller-owned reference, so that release would destroy the wrapper
+      // and leave FFX with a dangling pointer. Keep one compatibility reference for the lifetime of
+      // the process; there is only one frame-generation swapchain and no destruction notification
+      // is available here to release it safely.
+      wrappedSwapchain->AddRef();
+      *swapchainDesc->swapchain = (IDXGISwapChain4 *)wrappedSwapchain;
+      RDCLOG("Wrapped FidelityFX frame-generation swapchain");
+    }
+
+    return ret;
+  }
 
   HookedFunction<PFN_agsInit> agsInit;
   HookedFunction<PFN_agsInitialize> agsInitialize;
@@ -677,3 +873,5 @@ private:
 };
 
 AMDHook AMDHook::amdhooks;
+Threading::CriticalSection AMDHook::ffxHookLock;
+bool AMDHook::ffxInlineHookInstalled = false;
