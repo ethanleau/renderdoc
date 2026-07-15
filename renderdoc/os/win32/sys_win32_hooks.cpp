@@ -24,6 +24,7 @@
  ******************************************************************************/
 
 #include <winsock2.h>
+#include <shellapi.h>
 #include "core/core.h"
 #include "hooks/hooks.h"
 #include "os/os_specific.h"
@@ -70,6 +71,8 @@ typedef BOOL(WINAPI *PFN_CREATE_PROCESS_WITH_LOGON_W)(LPCWSTR lpUsername, LPCWST
                                                       LPSTARTUPINFOW lpStartupInfo,
                                                       LPPROCESS_INFORMATION lpProcessInformation);
 
+typedef BOOL(WINAPI *PFN_SHELL_EXECUTE_EX_W)(SHELLEXECUTEINFOW *pExecInfo);
+
 class SysHook : LibraryHook
 {
 public:
@@ -89,6 +92,7 @@ public:
     LibraryHooks::RegisterLibraryHook("api-ms-win-core-processthreads-l1-1-0.dll", NULL);
     LibraryHooks::RegisterLibraryHook("api-ms-win-core-processthreads-l1-1-1.dll", NULL);
     LibraryHooks::RegisterLibraryHook("api-ms-win-core-processthreads-l1-1-2.dll", NULL);
+    LibraryHooks::RegisterLibraryHook("shell32.dll", NULL);
     LibraryHooks::RegisterLibraryHook("ws2_32.dll", NULL);
 
     // we want to hook CreateProcess purely so that we can recursively insert our hooks (if we so
@@ -101,6 +105,8 @@ public:
 
     CreateProcessWithLogonW.Register("advapi32.dll", "CreateProcessWithLogonW",
                                      CreateProcessWithLogonW_hook);
+
+    ShellExecuteExW.Register("shell32.dll", "ShellExecuteExW", ShellExecuteExW_hook);
 
     // handle API set exports if they exist. These don't really exist so we don't have to worry
     // about double hooking, and also they call into the 'real' implementation in kernelbase.dll
@@ -168,6 +174,8 @@ private:
 
   HookedFunction<PFN_CREATE_PROCESS_WITH_LOGON_W> CreateProcessWithLogonW;
 
+  HookedFunction<PFN_SHELL_EXECUTE_EX_W> ShellExecuteExW;
+
   HookedFunction<PFN_WSASTARTUP> WSAStartup;
   HookedFunction<PFN_WSACLEANUP> WSACleanup;
 
@@ -179,6 +187,46 @@ private:
     if(ret == 0)
       syshooks.m_WSARefCount++;
 
+    return ret;
+  }
+
+  static BOOL WINAPI ShellExecuteExW_hook(SHELLEXECUTEINFOW *pExecInfo)
+  {
+    bool recursive = syshooks.CheckRecurse();
+
+    if(recursive)
+      return syshooks.ShellExecuteExW()(pExecInfo);
+
+    BOOL ret = syshooks.ShellExecuteExW()(pExecInfo);
+    DWORD lastError = GetLastError();
+
+    if(ret && pExecInfo && pExecInfo->hProcess &&
+       ShouldInject(pExecInfo->lpFile, pExecInfo->lpParameters))
+    {
+      DWORD processId = GetProcessId(pExecInfo->hProcess);
+
+      if(processId != 0)
+      {
+        RDCDEBUG("Intercepting ShellExecuteExW child process %lu", processId);
+
+        rdcpair<RDResult, uint32_t> res = Process::InjectIntoProcess(
+            processId, {}, RenderDoc::Inst().GetCaptureFileTemplate(),
+            RenderDoc::Inst().GetCaptureOptions(), false);
+
+        if(res.first == ResultCode::Succeeded)
+          RenderDoc::Inst().AddChildProcess((uint32_t)processId, res.second);
+        else
+          RDCWARN("ShellExecuteExW child process %lu injection failed: %s", processId,
+                  res.first.message.c_str());
+      }
+      else
+      {
+        RDCWARN("Couldn't get process ID from ShellExecuteExW process handle: %lu", GetLastError());
+      }
+    }
+
+    syshooks.EndRecurse();
+    SetLastError(lastError);
     return ret;
   }
 
@@ -299,9 +347,9 @@ private:
       RDCDEBUG("Intercepting %s", entryPoint);
 
       // inherit logfile and capture options
-      rdcpair<RDResult, uint32_t> res = Process::InjectIntoProcess(
-          lpProcessInformation->dwProcessId, {}, RenderDoc::Inst().GetCaptureFileTemplate(),
-          RenderDoc::Inst().GetCaptureOptions(), false);
+      rdcpair<RDResult, uint32_t> res = Process::InjectIntoSuspendedProcess(
+          lpProcessInformation->dwProcessId, lpProcessInformation->hThread, {},
+          RenderDoc::Inst().GetCaptureFileTemplate(), RenderDoc::Inst().GetCaptureOptions(), false);
 
       if(res.first == ResultCode::Succeeded)
         RenderDoc::Inst().AddChildProcess((uint32_t)lpProcessInformation->dwProcessId, res.second);

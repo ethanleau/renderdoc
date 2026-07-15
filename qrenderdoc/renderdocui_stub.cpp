@@ -69,6 +69,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInst, _In_opt_ HINSTANCE hPrevInstance, _In_
   STARTUPINFOW si;
   ZeroMemory(&pi, sizeof(pi));
   ZeroMemory(&si, sizeof(si));
+  si.cb = sizeof(si);
 
   CreateProcessW(curFile, paramsAlloc, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
 

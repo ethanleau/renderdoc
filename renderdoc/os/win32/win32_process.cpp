@@ -398,13 +398,176 @@ uintptr_t FindRemoteDLL(DWORD pid, rdcstr libName)
   return ret;
 }
 
-void InjectFunctionCall(HANDLE hProcess, uintptr_t renderdoc_remote, const char *funcName,
-                        void *data, const size_t dataLen)
+static bool InvokeRemoteFunctionViaThreadContext(HANDLE hProcess, HANDLE hThread,
+                                                 uintptr_t remoteFunction, void *data,
+                                                 const size_t dataLen, const char *functionName)
+{
+  if(remoteFunction == 0 || dataLen == 0)
+  {
+    RDCERR("Invalid thread-context call injection attempt for %s", functionName);
+    return false;
+  }
+
+  // Keep code and writable data on separate pages. The completion flag lets the injecting thread
+  // know the call has returned before it suspends the target and restores the original context.
+  const SIZE_T flagOffset = AlignUp(dataLen, sizeof(uint32_t));
+  const SIZE_T remoteDataSize = flagOffset + sizeof(uint32_t);
+
+  byte *remoteData = (byte *)VirtualAllocEx(hProcess, NULL, remoteDataSize,
+                                            MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+  byte *remoteCode = (byte *)VirtualAllocEx(hProcess, NULL, 4096, MEM_COMMIT | MEM_RESERVE,
+                                            PAGE_READWRITE);
+
+  if(remoteData == NULL || remoteCode == NULL)
+  {
+    RDCERR("Couldn't allocate remote memory for thread-context call to %s: %u", functionName,
+           GetLastError());
+    if(remoteCode)
+      VirtualFreeEx(hProcess, remoteCode, 0, MEM_RELEASE);
+    if(remoteData)
+      VirtualFreeEx(hProcess, remoteData, 0, MEM_RELEASE);
+    return false;
+  }
+
+  uint32_t completed = 0;
+  SIZE_T numWritten = 0;
+  bool success = WriteProcessMemory(hProcess, remoteData, data, dataLen, &numWritten) != FALSE &&
+                 numWritten == dataLen;
+  success = success &&
+            WriteProcessMemory(hProcess, remoteData + flagOffset, &completed, sizeof(completed),
+                               &numWritten) != FALSE &&
+            numWritten == sizeof(completed);
+
+#if ENABLED(RDOC_X64)
+  byte code[] = {
+      0x48, 0x83, 0xe4, 0xf0,                         // and rsp, -16
+      0x48, 0x83, 0xec, 0x20,                         // sub rsp, 20h (shadow space)
+      0x48, 0xb9, 0,    0,    0,    0,    0, 0, 0, 0, // mov rcx, argument
+      0x48, 0xb8, 0,    0,    0,    0,    0, 0, 0, 0, // mov rax, function
+      0xff, 0xd0,                                     // call rax
+      0x48, 0xb8, 0,    0,    0,    0,    0, 0, 0, 0, // mov rax, completion flag
+      0xc7, 0x00, 0x01, 0x00, 0x00, 0x00,             // mov dword ptr [rax], 1
+      0xf3, 0x90,                                     // pause
+      0xeb, 0xfc,                                     // jmp to pause
+  };
+
+  uintptr_t remoteArgument = (uintptr_t)remoteData;
+  uintptr_t remoteCompleted = (uintptr_t)(remoteData + flagOffset);
+  memcpy(code + 10, &remoteArgument, sizeof(remoteArgument));
+  memcpy(code + 20, &remoteFunction, sizeof(remoteFunction));
+  memcpy(code + 32, &remoteCompleted, sizeof(remoteCompleted));
+#else
+  byte code[] = {
+      0xb8, 0,    0,    0,    0,                      // mov eax, argument
+      0x50,                                           // push eax
+      0xb8, 0,    0,    0,    0,                      // mov eax, function
+      0xff, 0xd0,                                     // call eax
+      0xb8, 0,    0,    0,    0,                      // mov eax, completion flag
+      0xc7, 0x00, 0x01, 0x00, 0x00, 0x00,             // mov dword ptr [eax], 1
+      0xf3, 0x90,                                     // pause
+      0xeb, 0xfc,                                     // jmp to pause
+  };
+
+  uintptr_t remoteArgument = (uintptr_t)remoteData;
+  uintptr_t remoteCompleted = (uintptr_t)(remoteData + flagOffset);
+  memcpy(code + 1, &remoteArgument, sizeof(remoteArgument));
+  memcpy(code + 7, &remoteFunction, sizeof(remoteFunction));
+  memcpy(code + 14, &remoteCompleted, sizeof(remoteCompleted));
+#endif
+
+  success = success && WriteProcessMemory(hProcess, remoteCode, code, sizeof(code), &numWritten) !=
+                           FALSE &&
+            numWritten == sizeof(code);
+
+  DWORD oldProtect = 0;
+  success = success &&
+            VirtualProtectEx(hProcess, remoteCode, 4096, PAGE_EXECUTE_READ, &oldProtect) != FALSE;
+  if(success)
+    success = FlushInstructionCache(hProcess, remoteCode, sizeof(code)) != FALSE;
+
+  CONTEXT originalContext = {};
+  originalContext.ContextFlags = CONTEXT_ALL;
+  success = success && GetThreadContext(hThread, &originalContext) != FALSE;
+
+  CONTEXT injectedContext = originalContext;
+#if ENABLED(RDOC_X64)
+  injectedContext.Rip = (DWORD64)remoteCode;
+#else
+  injectedContext.Eip = (DWORD)remoteCode;
+#endif
+
+  if(success)
+    success = SetThreadContext(hThread, &injectedContext) != FALSE;
+
+  if(!success)
+  {
+    RDCERR("Couldn't prepare thread-context call to %s: %u", functionName, GetLastError());
+    VirtualFreeEx(hProcess, remoteCode, 0, MEM_RELEASE);
+    VirtualFreeEx(hProcess, remoteData, 0, MEM_RELEASE);
+    return false;
+  }
+
+  DWORD previousSuspendCount = ResumeThread(hThread);
+  if(previousSuspendCount == ~0U)
+  {
+    RDCERR("Couldn't resume target thread for call to %s: %u", functionName, GetLastError());
+    SetThreadContext(hThread, &originalContext);
+    VirtualFreeEx(hProcess, remoteCode, 0, MEM_RELEASE);
+    VirtualFreeEx(hProcess, remoteData, 0, MEM_RELEASE);
+    return false;
+  }
+
+  // The old CreateRemoteThread path waited forever too. Polling also lets us stop if the target
+  // exits while LoadLibraryW or an INTERNAL_* function is running.
+  for(;;)
+  {
+    SIZE_T numRead = 0;
+    if(ReadProcessMemory(hProcess, remoteData + flagOffset, &completed, sizeof(completed),
+                         &numRead) != FALSE &&
+       numRead == sizeof(completed) && completed == 1)
+      break;
+
+    if(WaitForSingleObject(hProcess, 1) == WAIT_OBJECT_0)
+    {
+      RDCERR("Target process exited during thread-context call to %s", functionName);
+      return false;
+    }
+  }
+
+  if(SuspendThread(hThread) == ~0U)
+  {
+    RDCERR("Couldn't suspend target thread after call to %s: %u", functionName, GetLastError());
+    return false;
+  }
+
+  // The remote stub can only be freed after its spinning thread has been redirected back to the
+  // exact context captured above.
+  if(!SetThreadContext(hThread, &originalContext))
+  {
+    RDCERR("Couldn't restore target thread after call to %s: %u", functionName, GetLastError());
+    return false;
+  }
+
+  SIZE_T numRead = 0;
+  success = ReadProcessMemory(hProcess, remoteData, data, dataLen, &numRead) != FALSE &&
+            numRead == dataLen;
+  if(!success)
+    RDCERR("Couldn't read back data from thread-context call to %s: %u", functionName,
+           GetLastError());
+
+  VirtualFreeEx(hProcess, remoteCode, 0, MEM_RELEASE);
+  VirtualFreeEx(hProcess, remoteData, 0, MEM_RELEASE);
+  return success;
+}
+
+static bool InjectFunctionCall(HANDLE hProcess, HANDLE hSuspendedThread,
+                               uintptr_t renderdoc_remote, const char *funcName, void *data,
+                               const size_t dataLen)
 {
   if(dataLen == 0)
   {
     RDCERR("Invalid function call injection attempt");
-    return;
+    return false;
   }
 
   RDCDEBUG("Injecting call to %s", funcName);
@@ -418,18 +581,30 @@ void InjectFunctionCall(HANDLE hProcess, uintptr_t renderdoc_remote, const char 
   // in the remote module (which might be loaded at a different base address
   uintptr_t func_remote = func_local + renderdoc_remote - (uintptr_t)renderdoc_local;
 
+  if(hSuspendedThread)
+    return InvokeRemoteFunctionViaThreadContext(hProcess, hSuspendedThread, func_remote, data,
+                                                dataLen, funcName);
+
   void *remoteMem = VirtualAllocEx(hProcess, NULL, dataLen, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
   SIZE_T numWritten;
   WriteProcessMemory(hProcess, remoteMem, data, dataLen, &numWritten);
 
   HANDLE hThread =
       CreateRemoteThread(hProcess, NULL, 0, (LPTHREAD_START_ROUTINE)func_remote, remoteMem, 0, NULL);
+  if(hThread == NULL)
+  {
+    RDCERR("Couldn't create remote thread for %s: %u", funcName, GetLastError());
+    VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
+    return false;
+  }
+
   WaitForSingleObject(hThread, INFINITE);
 
   ReadProcessMemory(hProcess, remoteMem, data, dataLen, &numWritten);
 
   CloseHandle(hThread);
   VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
+  return true;
 }
 
 static PROCESS_INFORMATION RunProcess(const rdcstr &app, const rdcstr &workingDir,
@@ -571,10 +746,9 @@ static PROCESS_INFORMATION RunProcess(const rdcstr &app, const rdcstr &workingDi
   return pi;
 }
 
-rdcpair<RDResult, uint32_t> Process::InjectIntoProcess(uint32_t pid,
-                                                       const rdcarray<EnvironmentModification> &env,
-                                                       const rdcstr &capturefile,
-                                                       const CaptureOptions &opts, bool waitForExit)
+static rdcpair<RDResult, uint32_t> InjectIntoProcessInternal(
+    uint32_t pid, HANDLE hSuspendedThread, const rdcarray<EnvironmentModification> &env,
+    const rdcstr &capturefile, const CaptureOptions &opts, bool waitForExit)
 {
   rdcwstr wcapturefile = StringFormat::UTF82Wide(capturefile);
 
@@ -970,7 +1144,22 @@ rdcpair<RDResult, uint32_t> Process::InjectIntoProcess(uint32_t pid,
     return {ResultCode::Succeeded, (uint32_t)exitCode};
   }
 
-  InjectDLL(hProcess, renderdocPath);
+  if(hSuspendedThread)
+  {
+    // The loader has not run yet, so module snapshots of this newly-created suspended process can
+    // fail with ERROR_PARTIAL_COPY. System DLLs are shared at the same address between same-bitness
+    // processes, which is also the assumption made by the original CreateRemoteThread path.
+    HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
+    uintptr_t loadLibraryW = (uintptr_t)GetProcAddress(kernel32, "LoadLibraryW");
+    if(loadLibraryW != 0)
+      InvokeRemoteFunctionViaThreadContext(hProcess, hSuspendedThread, loadLibraryW, renderdocPath,
+                                           (wcslen(renderdocPath) + 1) * sizeof(wchar_t),
+                                           "LoadLibraryW");
+  }
+  else
+  {
+    InjectDLL(hProcess, renderdocPath);
+  }
 
   const char *rdoc_dll = STRINGIZE(RDOC_BASE_NAME);
 
@@ -991,19 +1180,19 @@ rdcpair<RDResult, uint32_t> Process::InjectIntoProcess(uint32_t pid,
     // safe to cast away the const as we know these functions don't modify the parameters
 
     if(!capturefile.empty())
-      InjectFunctionCall(hProcess, loc, "INTERNAL_SetCaptureFile", (void *)capturefile.c_str(),
-                         capturefile.size() + 1);
+      InjectFunctionCall(hProcess, hSuspendedThread, loc, "INTERNAL_SetCaptureFile",
+                         (void *)capturefile.c_str(), capturefile.size() + 1);
 
     rdcstr debugLogfile = RDCGETLOGFILE();
 
-    InjectFunctionCall(hProcess, loc, "INTERNAL_SetDebugLogFile", (void *)debugLogfile.c_str(),
-                       debugLogfile.size() + 1);
+    InjectFunctionCall(hProcess, hSuspendedThread, loc, "INTERNAL_SetDebugLogFile",
+                       (void *)debugLogfile.c_str(), debugLogfile.size() + 1);
 
-    InjectFunctionCall(hProcess, loc, "INTERNAL_SetCaptureOptions", (CaptureOptions *)&opts,
-                       sizeof(CaptureOptions));
+    InjectFunctionCall(hProcess, hSuspendedThread, loc, "INTERNAL_SetCaptureOptions",
+                       (CaptureOptions *)&opts, sizeof(CaptureOptions));
 
-    InjectFunctionCall(hProcess, loc, "INTERNAL_GetTargetControlIdent", &result.second,
-                       sizeof(result.second));
+    InjectFunctionCall(hProcess, hSuspendedThread, loc, "INTERNAL_GetTargetControlIdent",
+                       &result.second, sizeof(result.second));
 
     if(!env.empty())
     {
@@ -1017,17 +1206,18 @@ rdcpair<RDResult, uint32_t> Process::InjectIntoProcess(uint32_t pid,
         if(name == "")
           break;
 
-        InjectFunctionCall(hProcess, loc, "INTERNAL_EnvModName", (void *)name.c_str(),
-                           name.size() + 1);
-        InjectFunctionCall(hProcess, loc, "INTERNAL_EnvModValue", (void *)value.c_str(),
-                           value.size() + 1);
-        InjectFunctionCall(hProcess, loc, "INTERNAL_EnvSep", &sep, sizeof(sep));
-        InjectFunctionCall(hProcess, loc, "INTERNAL_EnvMod", &mod, sizeof(mod));
+        InjectFunctionCall(hProcess, hSuspendedThread, loc, "INTERNAL_EnvModName",
+                           (void *)name.c_str(), name.size() + 1);
+        InjectFunctionCall(hProcess, hSuspendedThread, loc, "INTERNAL_EnvModValue",
+                           (void *)value.c_str(), value.size() + 1);
+        InjectFunctionCall(hProcess, hSuspendedThread, loc, "INTERNAL_EnvSep", &sep, sizeof(sep));
+        InjectFunctionCall(hProcess, hSuspendedThread, loc, "INTERNAL_EnvMod", &mod, sizeof(mod));
       }
 
       // parameter is unused
       void *dummy = NULL;
-      InjectFunctionCall(hProcess, loc, "INTERNAL_ApplyEnvMods", &dummy, sizeof(dummy));
+      InjectFunctionCall(hProcess, hSuspendedThread, loc, "INTERNAL_ApplyEnvMods", &dummy,
+                         sizeof(dummy));
     }
   }
 
@@ -1037,6 +1227,21 @@ rdcpair<RDResult, uint32_t> Process::InjectIntoProcess(uint32_t pid,
   CloseHandle(hProcess);
 
   return result;
+}
+
+rdcpair<RDResult, uint32_t> Process::InjectIntoProcess(
+    uint32_t pid, const rdcarray<EnvironmentModification> &env, const rdcstr &capturefile,
+    const CaptureOptions &opts, bool waitForExit)
+{
+  return InjectIntoProcessInternal(pid, NULL, env, capturefile, opts, waitForExit);
+}
+
+rdcpair<RDResult, uint32_t> Process::InjectIntoSuspendedProcess(
+    uint32_t pid, void *suspendedThread, const rdcarray<EnvironmentModification> &env,
+    const rdcstr &capturefile, const CaptureOptions &opts, bool waitForExit)
+{
+  return InjectIntoProcessInternal(pid, (HANDLE)suspendedThread, env, capturefile, opts,
+                                   waitForExit);
 }
 
 uint32_t Process::LaunchProcess(const rdcstr &app, const rdcstr &workingDir, const rdcstr &cmdLine,
@@ -1163,10 +1368,10 @@ rdcpair<RDResult, uint32_t> Process::LaunchAndInjectIntoProcess(
     return {result, 0};
   }
 
-  rdcpair<RDResult, uint32_t> ret = InjectIntoProcess(pi.dwProcessId, {}, capturefile, opts, false);
+  rdcpair<RDResult, uint32_t> ret =
+      InjectIntoSuspendedProcess(pi.dwProcessId, pi.hThread, {}, capturefile, opts, false);
 
   CloseHandle(pi.hProcess);
-  ResumeThread(pi.hThread);
   ResumeThread(pi.hThread);
 
   if(ret.second == 0 || ret.first != ResultCode::Succeeded)
