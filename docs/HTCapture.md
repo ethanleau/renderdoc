@@ -44,9 +44,9 @@ git fetch upstream
 如果当前自定义代码仍在 `v1.x`，先保留它为 HTCapture，再从基础提交创建干净的 `v1.x`：
 
 ```powershell
-git branch -m v1.x HTCcapture
+git branch -m v1.x HTCapture
 git switch -c v1.x origin/v1.x
-git push -u origin HTCcapture
+git push -u origin HTCapture
 ```
 
 远程已经存在 `origin/v1.x`，因此初次拆分时只需要推送新创建的 `HTCapture`。以后 `v1.x` 同步了新的官方提交，再单独推送更新后的 `v1.x`。
@@ -65,14 +65,14 @@ git push origin v1.x
 然后把本地改动重放到新的官方基础上：
 
 ```powershell
-git switch HTCcapture
+git switch HTCapture
 git rebase v1.x
 ```
 
 解决冲突并完成编译、HTGame 启动和 FSR3 `ResizeBuffers/Present` 验证后，再更新远程 HTCapture 分支：
 
 ```powershell
-git push --force-with-lease origin HTCcapture
+git push --force-with-lease origin HTCapture
 ```
 
 `HTCapture` 使用 rebase 后需要强制更新远程，因此应使用 `--force-with-lease`，不要使用无保护的 `--force`。每次验证通过后建议创建一个带版本号的 tag，方便回退到已知可用版本。
