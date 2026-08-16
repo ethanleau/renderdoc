@@ -564,8 +564,11 @@ public:
     }
 
     LibraryHooks::RegisterLibraryHook("d3d12.dll", NULL);
+    LibraryHooks::RegisterLibraryHook("sl.interposer.dll", NULL);
 
     CreateDevice.Register("d3d12.dll", "D3D12CreateDevice", D3D12CreateDevice_hook);
+    StreamlineCreateDevice.Register("sl.interposer.dll", "D3D12CreateDevice",
+                                    StreamlineD3D12CreateDevice_hook);
     GetDebugInterface.Register("d3d12.dll", "D3D12GetDebugInterface", D3D12GetDebugInterface_hook);
     GetInterface.Register("d3d12.dll", "D3D12GetInterface", D3D12GetInterface_hook);
     EnableExperimentalFeatures.Register("d3d12.dll", "D3D12EnableExperimentalFeatures",
@@ -687,6 +690,7 @@ private:
   HookedFunction<PFN_D3D12_GET_DEBUG_INTERFACE> GetDebugInterface;
   HookedFunction<PFN_D3D12_GET_INTERFACE> GetInterface;
   HookedFunction<PFN_D3D12_CREATE_DEVICE> CreateDevice;
+  HookedFunction<PFN_D3D12_CREATE_DEVICE> StreamlineCreateDevice;
   HookedFunction<PFN_D3D12_ENABLE_EXPERIMENTAL_FEATURES> EnableExperimentalFeatures;
   HookedFunction<PFNGetD3D11On12On7Interface> GetD3D11On12On7;
 
@@ -903,6 +907,22 @@ private:
         RDCERR("Something went seriously wrong, d3d12.dll couldn't be loaded!");
         return E_UNEXPECTED;
       }
+    }
+
+    return d3d12hooks.Create_Internal(createFunc, NULL, pAdapter, MinimumFeatureLevel, riid,
+                                      ppDevice);
+  }
+
+  static HRESULT WINAPI StreamlineD3D12CreateDevice_hook(IUnknown *pAdapter,
+                                                         D3D_FEATURE_LEVEL MinimumFeatureLevel,
+                                                         REFIID riid, void **ppDevice)
+  {
+    PFN_D3D12_CREATE_DEVICE createFunc = d3d12hooks.StreamlineCreateDevice();
+
+    if(!createFunc)
+    {
+      RDCERR("Streamline D3D12CreateDevice hook has no original function");
+      return E_UNEXPECTED;
     }
 
     return d3d12hooks.Create_Internal(createFunc, NULL, pAdapter, MinimumFeatureLevel, riid,

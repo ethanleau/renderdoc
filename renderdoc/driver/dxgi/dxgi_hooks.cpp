@@ -250,12 +250,22 @@ public:
     RDCLOG("Registering DXGI hooks");
 
     LibraryHooks::RegisterLibraryHook("dxgi.dll", NULL);
+    LibraryHooks::RegisterLibraryHook("sl.interposer.dll", NULL);
 
     CreateDXGIFactory.Register("dxgi.dll", "CreateDXGIFactory", CreateDXGIFactory_hook);
     CreateDXGIFactory1.Register("dxgi.dll", "CreateDXGIFactory1", CreateDXGIFactory1_hook);
     CreateDXGIFactory2.Register("dxgi.dll", "CreateDXGIFactory2", CreateDXGIFactory2_hook);
+    StreamlineCreateDXGIFactory.Register("sl.interposer.dll", "CreateDXGIFactory",
+                                         StreamlineCreateDXGIFactory_hook);
+    StreamlineCreateDXGIFactory1.Register("sl.interposer.dll", "CreateDXGIFactory1",
+                                          StreamlineCreateDXGIFactory1_hook);
+    StreamlineCreateDXGIFactory2.Register("sl.interposer.dll", "CreateDXGIFactory2",
+                                          StreamlineCreateDXGIFactory2_hook);
     GetDebugInterface.Register("dxgi.dll", "DXGIGetDebugInterface", DXGIGetDebugInterface_hook);
     GetDebugInterface1.Register("dxgi.dll", "DXGIGetDebugInterface1", DXGIGetDebugInterface1_hook);
+
+    m_RecurseSlot = Threading::AllocateTLSSlot();
+    Threading::SetTLSValue(m_RecurseSlot, NULL);
   }
 
 private:
@@ -267,43 +277,97 @@ private:
   HookedFunction<PFN_CREATE_DXGI_FACTORY> CreateDXGIFactory;
   HookedFunction<PFN_CREATE_DXGI_FACTORY> CreateDXGIFactory1;
   HookedFunction<PFN_CREATE_DXGI_FACTORY2> CreateDXGIFactory2;
+  HookedFunction<PFN_CREATE_DXGI_FACTORY> StreamlineCreateDXGIFactory;
+  HookedFunction<PFN_CREATE_DXGI_FACTORY> StreamlineCreateDXGIFactory1;
+  HookedFunction<PFN_CREATE_DXGI_FACTORY2> StreamlineCreateDXGIFactory2;
   HookedFunction<PFN_GET_DEBUG_INTERFACE> GetDebugInterface;
   HookedFunction<PFN_GET_DEBUG_INTERFACE1> GetDebugInterface1;
 
-  static HRESULT WINAPI CreateDXGIFactory_hook(__in REFIID riid, __out void **ppFactory)
+  uint64_t m_RecurseSlot = 0;
+
+  void EndRecurse() { Threading::SetTLSValue(m_RecurseSlot, NULL); }
+  bool CheckRecurse()
   {
+    if(Threading::GetTLSValue(m_RecurseSlot) == NULL)
+    {
+      Threading::SetTLSValue(m_RecurseSlot, (void *)1);
+      return false;
+    }
+
+    return true;
+  }
+
+  HRESULT CreateFactory_Internal(PFN_CREATE_DXGI_FACTORY real, const char *name, REFIID riid,
+                                 void **ppFactory)
+  {
+    if(CheckRecurse())
+      return real(riid, ppFactory);
+
     if(ppFactory)
       *ppFactory = NULL;
-    HRESULT ret = dxgihooks.CreateDXGIFactory()(riid, ppFactory);
+
+    HRESULT ret = real(riid, ppFactory);
 
     if(SUCCEEDED(ret))
-      RefCountDXGIObject::HandleWrap("CreateDXGIFactory", riid, ppFactory);
+      RefCountDXGIObject::HandleWrap(name, riid, ppFactory);
 
+    EndRecurse();
     return ret;
+  }
+
+  HRESULT CreateFactory2_Internal(PFN_CREATE_DXGI_FACTORY2 real, const char *name, UINT Flags,
+                                  REFIID riid, void **ppFactory)
+  {
+    if(CheckRecurse())
+      return real(Flags, riid, ppFactory);
+
+    if(ppFactory)
+      *ppFactory = NULL;
+
+    HRESULT ret = real(Flags, riid, ppFactory);
+
+    if(SUCCEEDED(ret))
+      RefCountDXGIObject::HandleWrap(name, riid, ppFactory);
+
+    EndRecurse();
+    return ret;
+  }
+
+  static HRESULT WINAPI CreateDXGIFactory_hook(__in REFIID riid, __out void **ppFactory)
+  {
+    return dxgihooks.CreateFactory_Internal(dxgihooks.CreateDXGIFactory(), "CreateDXGIFactory",
+                                            riid, ppFactory);
   }
 
   static HRESULT WINAPI CreateDXGIFactory1_hook(__in REFIID riid, __out void **ppFactory)
   {
-    if(ppFactory)
-      *ppFactory = NULL;
-    HRESULT ret = dxgihooks.CreateDXGIFactory1()(riid, ppFactory);
-
-    if(SUCCEEDED(ret))
-      RefCountDXGIObject::HandleWrap("CreateDXGIFactory1", riid, ppFactory);
-
-    return ret;
+    return dxgihooks.CreateFactory_Internal(dxgihooks.CreateDXGIFactory1(), "CreateDXGIFactory1",
+                                            riid, ppFactory);
   }
 
   static HRESULT WINAPI CreateDXGIFactory2_hook(UINT Flags, REFIID riid, void **ppFactory)
   {
-    if(ppFactory)
-      *ppFactory = NULL;
-    HRESULT ret = dxgihooks.CreateDXGIFactory2()(Flags, riid, ppFactory);
+    return dxgihooks.CreateFactory2_Internal(dxgihooks.CreateDXGIFactory2(), "CreateDXGIFactory2",
+                                             Flags, riid, ppFactory);
+  }
 
-    if(SUCCEEDED(ret))
-      RefCountDXGIObject::HandleWrap("CreateDXGIFactory2", riid, ppFactory);
+  static HRESULT WINAPI StreamlineCreateDXGIFactory_hook(__in REFIID riid, __out void **ppFactory)
+  {
+    return dxgihooks.CreateFactory_Internal(dxgihooks.StreamlineCreateDXGIFactory(),
+                                            "Streamline::CreateDXGIFactory", riid, ppFactory);
+  }
 
-    return ret;
+  static HRESULT WINAPI StreamlineCreateDXGIFactory1_hook(__in REFIID riid, __out void **ppFactory)
+  {
+    return dxgihooks.CreateFactory_Internal(dxgihooks.StreamlineCreateDXGIFactory1(),
+                                            "Streamline::CreateDXGIFactory1", riid, ppFactory);
+  }
+
+  static HRESULT WINAPI StreamlineCreateDXGIFactory2_hook(UINT Flags, REFIID riid, void **ppFactory)
+  {
+    return dxgihooks.CreateFactory2_Internal(dxgihooks.StreamlineCreateDXGIFactory2(),
+                                             "Streamline::CreateDXGIFactory2", Flags, riid,
+                                             ppFactory);
   }
 
   static HRESULT WINAPI DXGIGetDebugInterface_hook(REFIID riid, void **ppDebug)
