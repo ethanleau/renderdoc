@@ -1,6 +1,6 @@
 # YeeCapture 本地改动与升级维护
 
-本文是 `ethanleau/renderdoc` 中 HTCapture/YeeCapture 自定义分支的稳定文档入口，记录相对官方 RenderDoc 的功能差异、兼容性策略、诊断标记、验证结果和升级流程。
+本文是 `ethanleau/renderdoc` 中 YeeCapture 自定义分支的稳定文档入口，记录相对官方 RenderDoc 的功能差异、兼容性策略、诊断标记、验证结果和升级流程。
 
 ## 文档入口
 
@@ -8,7 +8,7 @@
 
 ## 当前功能差异
 
-当前 `HTCapture` 分支相对于干净的 `v1.x` 基线包含以下功能：
+当前 `YeeCapture` 分支相对于干净的 `v1.x` 基线包含以下功能：
 
 1. 增加 YeeCapture Windows 品牌化构建目标和集中构建配置。
 2. 增加 YeeCapture OpenGL 支持。
@@ -26,7 +26,7 @@
 
 ## 当前提交记录
 
-下表记录功能提交；纯文档修订未列入。`HTCapture` 经过 rebase 后提交哈希会改变，应按提交主题重新核对并更新本表。
+下表记录功能提交；纯文档修订未列入。`YeeCapture` 经过 rebase 后提交哈希会改变，应按提交主题重新核对并更新本表。
 
 | 提交 | 主题 | 主要范围 |
 | --- | --- | --- |
@@ -100,7 +100,7 @@ FFX hook 对未知 SDK 入口会自动停用，不应对不匹配的函数序言
 
 ```text
 v1.x       只包含官方 RenderDoc 代码
-HTCapture  基于 v1.x 的本地 HTCapture/YeeCapture 改动
+YeeCapture 基于 v1.x 的本地 YeeCapture 改动
 ```
 
 `origin` 指向 `https://github.com/ethanleau/renderdoc`，建议另外添加官方远程仓库：
@@ -112,15 +112,22 @@ git fetch upstream
 
 ## 一次性分支迁移
 
-如果当前自定义代码仍在 `v1.x`，先保留它为 HTCapture，再从基础提交创建干净的 `v1.x`：
+如果当前自定义代码仍在 `v1.x`，先保留它为 YeeCapture，再从基础提交创建干净的 `v1.x`：
 
 ```powershell
-git branch -m v1.x HTCapture
+git branch -m v1.x YeeCapture
 git switch -c v1.x origin/v1.x
-git push -u origin HTCapture
+git push -u origin YeeCapture
 ```
 
-远程已经存在 `origin/v1.x`，因此初次拆分时只需要推送新创建的 `HTCapture`。以后 `v1.x` 同步了新的官方提交，再单独推送更新后的 `v1.x`。
+远程已经存在 `origin/v1.x`，因此初次拆分时只需要推送新创建的 `YeeCapture`。以后 `v1.x` 同步了新的官方提交，再单独推送更新后的 `v1.x`。
+
+如果远端仍使用旧名称 `origin/HTCapture`，先发布并验证新分支，再删除旧分支：
+
+```powershell
+git push -u origin YeeCapture
+git push origin --delete HTCapture
+```
 
 ## 后续同步官方升级
 
@@ -136,17 +143,17 @@ git push origin v1.x
 然后把本地改动重放到新的官方基础上：
 
 ```powershell
-git switch HTCapture
+git switch YeeCapture
 git rebase v1.x
 ```
 
-解决冲突并完成编译、HTGame 启动和 FSR3 `ResizeBuffers/Present` 验证后，再更新远程 HTCapture 分支：
+解决冲突并完成编译、HTGame 启动和 FSR3 `ResizeBuffers/Present` 验证后，再更新远程 YeeCapture 分支：
 
 ```powershell
-git push --force-with-lease origin HTCapture
+git push --force-with-lease origin YeeCapture
 ```
 
-`HTCapture` 使用 rebase 后需要强制更新远程，因此应使用 `--force-with-lease`，不要使用无保护的 `--force`。每次验证通过后建议创建一个带版本号的 tag，方便回退到已知可用版本。
+`YeeCapture` 使用 rebase 后需要强制更新远程，因此应使用 `--force-with-lease`，不要使用无保护的 `--force`。每次验证通过后建议创建一个带版本号的 tag，方便回退到已知可用版本。
 
 ## 提交和验证建议
 
