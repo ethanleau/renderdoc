@@ -122,13 +122,6 @@ git push -u origin YeeCapture
 
 远程已经存在 `origin/v1.x`，因此初次拆分时只需要推送新创建的 `YeeCapture`。以后 `v1.x` 同步了新的官方提交，再单独推送更新后的 `v1.x`。
 
-如果远端仍使用旧名称 `origin/HTCapture`，先发布并验证新分支，再删除旧分支：
-
-```powershell
-git push -u origin YeeCapture
-git push origin --delete HTCapture
-```
-
 ## 后续同步官方升级
 
 先更新干净的基础分支：
