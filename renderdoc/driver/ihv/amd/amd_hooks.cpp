@@ -388,10 +388,15 @@ private:
   {
     FfxCreateFrameGenerationSwapChainForHwndDX12Desc *swapchainDesc = NULL;
     FfxCreateBackendDX12Desc *backendDesc = NULL;
+    rdcstr descriptorTypes;
 
     size_t count = 0;
     for(FfxApiHeader *header = desc; header && count < 16; header = header->pNext, count++)
     {
+      if(!descriptorTypes.empty())
+        descriptorTypes += ",";
+      descriptorTypes += StringFormat::Fmt("0x%llx", (unsigned long long)header->type);
+
       if(header->type == 0x30006)
         swapchainDesc = (FfxCreateFrameGenerationSwapChainForHwndDX12Desc *)header;
       else if(header->type == 0x2)
@@ -403,11 +408,27 @@ private:
     ID3DDevice *presentationDevice = GetD3D12DeviceIfAlloc(wrappedQueue);
     ID3DDevice *backendDevice = GetD3D12DeviceIfAlloc(wrappedBackendDevice);
 
+    IUnknown *realQueue = presentationDevice ? presentationDevice->GetRealIUnknown() : NULL;
+    IUnknown *realBackendDevice = backendDevice ? backendDevice->GetRealIUnknown() : NULL;
+    const char *queueAction = !swapchainDesc      ? "not-present"
+                              : presentationDevice ? "unwrap-for-framegen-swapchain"
+                                                   : "passthrough-native";
+    const char *backendAction = !backendDesc ? "not-present"
+                                : backendDevice ? "keep-wrapped"
+                                                : "passthrough-native";
+
+    // Versioned marker for diagnosing the D3D12 object policy used by this context.
+    RDCLOG("FFX_DX12_POLICY policy=keep-wrapped-v1 descriptors=[%s] "
+           "backend=%p backendReal=%p backendAction=%s queue=%p queueReal=%p queueAction=%s",
+           descriptorTypes.c_str(), wrappedBackendDevice, realBackendDevice, backendAction,
+           wrappedQueue, realQueue, queueAction);
+
     if(swapchainDesc && presentationDevice)
       swapchainDesc->gameQueue =
           (ID3D12CommandQueue *)presentationDevice->GetRealIUnknown();
-    if(backendDesc && backendDevice)
-      backendDesc->device = (ID3D12Device *)backendDevice->GetRealIUnknown();
+
+    // Keep the backend device wrapped so FidelityFX handles wrapped resources through RenderDoc.
+    // The frame-generation queue is unwrapped above and its returned swapchain is rewrapped below.
 
     PFN_ffxCreateContext real = amdhooks.ffxCreateContext();
     if(real == NULL)
@@ -420,8 +441,11 @@ private:
 
     if(swapchainDesc)
       swapchainDesc->gameQueue = wrappedQueue;
-    if(backendDesc)
-      backendDesc->device = wrappedBackendDevice;
+
+    RDCLOG("FFX_DX12_POLICY result=%s code=%u context=%p backendAfter=%p queueRestored=%p",
+           ret == 0 ? "success" : "failure", ret, context ? *context : NULL,
+           backendDesc ? backendDesc->device : NULL,
+           swapchainDesc ? swapchainDesc->gameQueue : NULL);
 
     if(ret == 0 && swapchainDesc && swapchainDesc->swapchain && *swapchainDesc->swapchain &&
        presentationDevice)
