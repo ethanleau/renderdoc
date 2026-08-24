@@ -1,10 +1,6 @@
 # YeeCapture 本地改动与升级维护
 
-本文是 `ethanleau/renderdoc` 中 YeeCapture 自定义分支的稳定文档入口，记录相对官方 RenderDoc 的功能差异、兼容性策略、诊断标记、验证结果和升级流程。
-
-## 文档入口
-
-本文的稳定入口为 `docs/YeeCapture.md`。仓库根目录的 `AGENTS.md` 只负责让代码代理发现本文件并遵守维护规则；它不是面向开发者的第二份文档，也不复制这里的实现说明。
+本文记录 `ethanleau/renderdoc` 中 YeeCapture 自定义分支相对官方 RenderDoc 的功能差异、兼容性策略、诊断标记、验证结果和升级流程。各章节相互独立，可按任务需要读取。
 
 ## 当前功能差异
 
@@ -109,18 +105,6 @@ YeeCapture 基于 v1.x 的本地 YeeCapture 改动
 git remote add upstream https://github.com/baldurk/renderdoc.git
 git fetch upstream
 ```
-
-## 一次性分支迁移
-
-如果当前自定义代码仍在 `v1.x`，先保留它为 YeeCapture，再从基础提交创建干净的 `v1.x`：
-
-```powershell
-git branch -m v1.x YeeCapture
-git switch -c v1.x origin/v1.x
-git push -u origin YeeCapture
-```
-
-远程已经存在 `origin/v1.x`，因此初次拆分时只需要推送新创建的 `YeeCapture`。以后 `v1.x` 同步了新的官方提交，再单独推送更新后的 `v1.x`。
 
 ## 后续同步官方升级
 
