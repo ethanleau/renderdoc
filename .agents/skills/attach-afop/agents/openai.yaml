@@ -1,0 +1,4 @@
+interface:
+  display_name: "Attach YeeCapture to AFOP"
+  short_description: "Prepare AFOP for reliable manual frame capture"
+  default_prompt: "Use $attach-afop to prepare AFOP for manual frame capture."

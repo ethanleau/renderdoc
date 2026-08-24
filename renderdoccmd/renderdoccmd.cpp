@@ -26,6 +26,7 @@
 #include "renderdoccmd.h"
 #include <app/renderdoc_app.h>
 #include <replay/version.h>
+#include <chrono>
 #include <string>
 
 #if defined(YEECAPTURE_BRANDED_BUILD)
@@ -338,6 +339,107 @@ public:
     }
 
     return res.ident;
+  }
+};
+
+struct TargetCaptureCommand : public Command
+{
+private:
+  uint32_t targetIdent = 0;
+  uint32_t frameNumber = 0;
+  uint32_t timeoutSeconds = 120;
+  bool queueCapture = false;
+  bool connectOnly = false;
+
+public:
+  TargetCaptureCommand() : Command() {}
+  virtual void AddOptions(cmdline::parser &parser)
+  {
+    parser.add<uint32_t>("target", 't', "The target-control identifier to connect to.", true);
+    parser.add<uint32_t>("frame", 'f', "Queue a capture at this frame instead of triggering one now.",
+                         false, 0);
+    parser.add<uint32_t>("timeout", 0, "Seconds to wait for the capture to finish.", false, 120,
+                         cmdline::range(1, 3600));
+    parser.add("connect-only", 0, "Verify the target-control connection without capturing.");
+  }
+  virtual const char *Description()
+  {
+    return "Triggers or queues a capture on a running target.";
+  }
+  virtual bool IsInternalOnly() { return false; }
+  virtual bool IsCaptureCommand() { return false; }
+  virtual bool Parse(cmdline::parser &parser, GlobalEnvironment &)
+  {
+    targetIdent = parser.get<uint32_t>("target");
+    queueCapture = parser.exist("frame");
+    frameNumber = parser.get<uint32_t>("frame");
+    timeoutSeconds = parser.get<uint32_t>("timeout");
+    connectOnly = parser.exist("connect-only");
+
+    if(connectOnly && queueCapture)
+    {
+      std::cerr << "Error: --connect-only cannot be combined with --frame." << std::endl;
+      return false;
+    }
+
+    return true;
+  }
+  virtual int Execute(const CaptureOptions &)
+  {
+    ITargetControl *control =
+        RENDERDOC_CreateTargetControl("localhost", targetIdent, RDOC_CMD_PROGRAM_NAME, true);
+
+    if(control == NULL || !control->Connected())
+    {
+      std::cerr << "Failed to connect to target control " << targetIdent << std::endl;
+      if(control)
+        control->Shutdown();
+      return 2;
+    }
+
+    std::cout << "Connected pid=" << control->GetPID() << " api=" << control->GetAPI()
+              << " target=" << control->GetTarget() << std::endl;
+
+    if(connectOnly)
+    {
+      control->Shutdown();
+      return 0;
+    }
+
+    if(queueCapture)
+    {
+      control->QueueCapture(frameNumber, 1);
+      std::cout << "Capture queued for frame " << frameNumber << std::endl;
+    }
+    else
+    {
+      control->TriggerCapture(1);
+      std::cout << "Capture triggered" << std::endl;
+    }
+
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSeconds);
+    while(control->Connected() && std::chrono::steady_clock::now() < deadline)
+    {
+      TargetControlMessage message = control->ReceiveMessage(NULL);
+
+      if(message.type == TargetControlMessageType::NewCapture)
+      {
+        std::cout << "Capture saved id=" << message.newCapture.captureId
+                  << " frame=" << message.newCapture.frameNumber
+                  << " bytes=" << message.newCapture.byteSize
+                  << " path=" << message.newCapture.path << std::endl;
+        control->Shutdown();
+        return 0;
+      }
+
+      if(message.type == TargetControlMessageType::Disconnected)
+        break;
+    }
+
+    control->Shutdown();
+    std::cerr << "Target disconnected or capture timed out" << std::endl;
+    return 3;
   }
 };
 
@@ -1589,6 +1691,7 @@ int renderdoccmd(GlobalEnvironment &env, std::vector<std::string> &argv)
 
     add_command("capture", new CaptureCommand());
     add_command("inject", new InjectCommand());
+    add_command("targetcapture", new TargetCaptureCommand());
 
 #if !defined(RDOC_SELFCAPTURE_LIMITEDAPI)
     add_command("thumb", new ThumbCommand());

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Attach Game Early"
+  short_description: "Prepare launcher-managed games for reliable early capture"
+  default_prompt: "Use $attach-game-early to diagnose this game launch and attach YeeCapture before graphics initialization."
