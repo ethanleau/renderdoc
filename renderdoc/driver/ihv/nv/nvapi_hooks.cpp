@@ -24,6 +24,7 @@
 
 #include <unordered_map>
 #include "common/formatting.h"
+#include "common/threading.h"
 #include "core/core.h"
 #include "core/settings.h"
 #include "driver/d3d11/d3d11_hooks.h"
@@ -584,23 +585,48 @@ private:
         pSwapChainDesc, ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
   }
 
+  static void LogNvAPIQuery(uint32_t ID, const char *name, const char *route)
+  {
+    static Threading::CriticalSection lock;
+    static std::unordered_map<uint32_t, bool> loggedIDs;
+
+    bool firstQuery = false;
+    {
+      SCOPED_LOCK(lock);
+      firstQuery = loggedIDs.emplace(ID, true).second;
+    }
+
+    if(firstQuery)
+      RDCLOG("NVAPI_QUERY id=0x%08x name=%s route=%s", ID, name, route);
+  }
+
   static void *nvapi_QueryInterface_hook(uint32_t ID)
   {
     void *real = nvhooks.nvapi_QueryInterface()(ID);
 
+    auto lookupIt = nvhooks.nvapi_lookup.find(ID);
+    const char *cname = lookupIt != nvhooks.nvapi_lookup.end() ? lookupIt->second : NULL;
+    rdcstr name = cname ? cname : StringFormat::Fmt("0x%x", ID);
+
     if(real == NULL)
+    {
+      LogNvAPIQuery(ID, name.c_str(), "driver-missing");
       return real;
+    }
 
 #undef HOOK_NVAPI
-#define HOOK_NVAPI(fname, ID)       \
-  case ID:                          \
-  {                                 \
-    nvhooks.fname.SetFuncPtr(real); \
-    return &CONCAT(fname, _hook);   \
+#define HOOK_NVAPI(fname, ID)                    \
+  case ID:                                       \
+  {                                              \
+    LogNvAPIQuery(ID, #fname, "wrapped");        \
+    nvhooks.fname.SetFuncPtr(real);               \
+    return &CONCAT(fname, _hook);                 \
   }
 #undef WHITELIST_NVAPI
-#define WHITELIST_NVAPI(fname, ID) \
-  case ID: return real;
+#define WHITELIST_NVAPI(fname, ID)                  \
+  case ID:                                          \
+    LogNvAPIQuery(ID, #fname, "whitelist");         \
+    return real;
 
     switch(ID)
     {
@@ -610,23 +636,33 @@ private:
       WHITELIST_NVAPI(unknown_func, 0xad298d3f);
       WHITELIST_NVAPI(unknown_func, 0x33c7358c);
       WHITELIST_NVAPI(unknown_func, 0x593e8644);
+      // Read-only adapter and driver discovery used by Streamline-enabled titles. These functions
+      // do not receive D3D objects, so they are safe to expose without enabling all NVAPI vendor
+      // extensions.
+      WHITELIST_NVAPI(NvAPI_EnumPhysicalGPUs, 0xe5ac921f);
+      WHITELIST_NVAPI(NvAPI_SYS_GetDriverAndBranchVersion, 0x2926aaad);
+      WHITELIST_NVAPI(NvAPI_GPU_GetArchInfo, 0xd8265d24);
+      WHITELIST_NVAPI(NvAPI_GetLogicalGPUFromPhysicalGPU, 0xadd604d1);
+      WHITELIST_NVAPI(NvAPI_GPU_GetLogicalGpuInfo, 0x842b066e);
+      WHITELIST_NVAPI(NvAPI_GPU_GetPCIIdentifiers, 0x2ddfb66e);
+      WHITELIST_NVAPI(NvAPI_GPU_GetFullName, 0xceee8e9f);
+      WHITELIST_NVAPI(NvAPI_GPU_GetGpuCoreCount, 0xc7026a87);
+      WHITELIST_NVAPI(NvAPI_GPU_GetAllClockFrequencies, 0xdcb616c3);
+      WHITELIST_NVAPI(NvAPI_DISP_GetDisplayIdByDisplayName, 0xae457190);
+      WHITELIST_NVAPI(NvAPI_Mosaic_GetDisplayViewportsByResolution, 0xdc6dc8d3);
+      WHITELIST_NVAPI(NvAPI_GetPhysicalGPUFromGPUID, 0x5380ad1a);
       default: break;
     }
 
-    const char *cname = nvhooks.nvapi_lookup[ID];
-    rdcstr name = cname ? cname : StringFormat::Fmt("0x%x", ID);
-
     if(RenderDoc::Inst().IsVendorExtensionEnabled(VendorExtensions::NvAPI))
     {
+      LogNvAPIQuery(ID, name.c_str(), "vendor-enabled");
       RDCDEBUG("NvAPI allowed: Returning %p for nvapi_QueryInterface(%s)", real, name.c_str());
       return real;
     }
     else
     {
-      static int count = 0;
-      if(count < 10)
-        RDCWARN("NvAPI disabled: Returning NULL for nvapi_QueryInterface(%s)", name.c_str());
-      count++;
+      LogNvAPIQuery(ID, name.c_str(), "blocked");
       return NULL;
     }
   }

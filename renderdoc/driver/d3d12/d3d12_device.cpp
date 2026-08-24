@@ -1061,6 +1061,12 @@ HRESULT WrappedID3D12Device::QueryInterface(REFIID riid, void **ppvObject)
   static const GUID ID3D12DeviceDriverDetails_RS5_uuid = {
       0xde18ef3a, 0x2089, 0x4936, {0xa3, 0xf3, 0xec, 0x78, 0x7a, 0xc6, 0xa4, 0x0d}};
 
+  // Undocumented D3D12 device interface observed during Streamline-enabled title startup. Unknown
+  // interfaces are already passed through to the real device; identify this one explicitly so the
+  // passthrough result is visible in diagnostics without changing its behaviour per-process.
+  static const GUID ID3D12DevicePrivateInterface_uuid = {
+      0x10b90151, 0x4435, 0x4004, {0x9f, 0xad, 0x19, 0x36, 0x14, 0x88, 0x89, 0x9a}};
+
   HRESULT hr = S_OK;
 
   if(riid == __uuidof(IUnknown))
@@ -1585,6 +1591,20 @@ HRESULT WrappedID3D12Device::QueryInterface(REFIID riid, void **ppvObject)
     {
       return E_NOINTERFACE;
     }
+  }
+  else if(riid == ID3D12DevicePrivateInterface_uuid)
+  {
+    HRESULT privateHr = m_pDevice->QueryInterface(riid, ppvObject);
+
+    static bool printed = false;
+    if(!printed)
+    {
+      RDCLOG("Forwarded undocumented D3D12 device interface query %s, result: %s",
+             ToStr(riid).c_str(), ToStr(privateHr).c_str());
+      printed = true;
+    }
+
+    return privateHr;
   }
   else if(riid == ID3D12DeviceDriverDetails_RS5_uuid)
   {
