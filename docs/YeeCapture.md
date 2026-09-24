@@ -19,6 +19,7 @@
 6. 对普通 FidelityFX D3D12 backend context 保持 wrapped device，避免 native device 与 wrapped resources 混用导致 NVIDIA 用户态驱动崩溃。
 7. 允许 Streamline 启动阶段所需的只读 NVAPI GPU/驱动发现查询，并记录每个 NVAPI ID 的首个路由结果；未开放全部 vendor extension。
 8. 增加 `yeecapturecmd targetcapture`，并提供 AFOP 专用及可配置的 launcher-managed game early-attach skills，不再依赖 `analysis` 下的临时工具。
+9. 增加 `ID3D12Device15` 的接口包装和六类 `TryCreate*` 描述符创建路径，保留驱动 HRESULT，并复用已有描述符捕获/回放记录。
 
 ## 当前提交记录
 
@@ -34,6 +35,7 @@
 | `e0ca749df` | `Fix FidelityFX DX12 backend device wrapping` | wrapped backend device 策略和 `FFX_DX12_POLICY` 日志 |
 | `2545a1463` | `Add NVIDIA discovery compatibility and diagnostics` | 只读 NVAPI discovery 白名单、`NVAPI_QUERY` 和私有 D3D12 interface 日志 |
 | `ac7b6290a` | `Add early game attach and target capture tools` | 正式 target-control capture 命令及两个 early-attach skills |
+| 按主题定位 | `Fix D3D12 Device15 wrapping for CONTROL Resonant` | Device15 ABI、接口身份与 TryCreate 描述符包装；启动抓帧和回放验证 |
 
 ## 兼容性策略与诊断
 
@@ -62,6 +64,14 @@ NVAPI_QUERY id=0x........ name=... route=wrapped|whitelist|vendor-enabled|blocke
 
 Streamline 观察到的私有 D3D12 device interface `10b90151-4435-4004-9fad-19361488899a` 仍按普通未知 interface 语义转发给真实 device，只额外记录一次 HRESULT。真实 driver 返回 `E_NOINTERFACE` 是允许结果，不能单独作为 attach 失败条件。
 
+### D3D12 Device15 接口边界
+
+`ID3D12Device15` 的 IID 为 `76cff76f-1e9b-4450-8cdc-34f1af788e5b`（见 [DirectX-Headers](https://github.com/microsoft/DirectX-Headers/blob/main/include/directx/d3d12.h)）。bundled SDK 更新前使用 `d3d12_device15.h` 补齐 ABI 声明。device 创建、QueryInterface、DXGI device 查询必须返回 wrapped Device15，不能透传 native device。
+
+诊断标记为 `D3D12_DEVICE_INTERFACE policy=wrapped-v1 interface=ID3D12Device15 result=S_OK`。CBV、SRV、UAV、RTV、DSV、Sampler2 的 `TryCreate*` 调用先解包 resource/descriptor，再调用真实 Device15；失败直接返回 HRESULT，不更新捕获元数据，成功复用现有描述符记录和 replay chunks。Trim notification 直接转发，flag-free `CreateQueryHeap1` 复用已有 query heap 包装；CPU-resolve query heaps、CPU `ResolveQueryData` 和 sampler feedback 仍明确返回 `E_NOTIMPL`，未实现这些能力的捕获支持。
+
+2026-09-24，CONTROL Resonant 的 DbgView 输出显示 NRI 选择 Device15，随后崩溃栈为 `NRI → WrappedID3D12CommandQueue::Signal → D3D12Core`，`Unwrap(pFence)` 后传入无效 fence 地址。验证发现仅拒绝 Device15 也不可行：该游戏附带的 NRI 虽然报告回退到 Device14，仍调用 vtable `+0x2b8`（Device15 的 `TryCreateConstantBufferView`），误入 `SetObjectAnnotation`，返回值 2 被当作成功 HRESULT，而 CBV 实际未创建。因此必须包装实际 Device15 接口，不能将“进程存活 + target-control 可连接”等同于正确捕获。
+
 ### Target-control capture 与 early attach
 
 正式命令为：
@@ -89,6 +99,14 @@ FFX hook 对未知 SDK 入口会自动停用，不应对不匹配的函数序言
 - `targetcapture` 已注册到命令列表，无效目标连接返回 2，互斥参数被拒绝；
 - 两个 skill 的 PowerShell 脚本均通过语法解析，skill metadata/frontmatter 检查通过；
 - AFOP `-PreflightOnly` 通过；当时 AFOP 未运行，因此没有在该次提交前验证中触发真实帧捕获。
+
+2026-09-24 CONTROL Resonant Device15 兼容验证：
+
+- x64 Release `yeecapture.dll` 构建成功。增量 LTCG 曾报 `LNK1103`，清理 `x64/Release/obj/renderdoc/yeecapture.iobj` 和 `.ipdb` 后完整链接通过；未修改全局工具链配置。
+- 使用游戏的 Agility SDK 619 做 native/wrapped 对照冒烟测试：Device15 的 IUnknown 身份一致，六类 TryCreate 描述符、flag-free query heap、queue/fence signal + event wait 均通过；非法 CBV 在两条路径都返回 `0x80070057`。包装后的 Device15 vtable slot 87 确认位于 `yeecapture.dll`。
+- Steam app `3669870` early attach 返回 `GAME_ATTACH_OK`，60 秒稳定性检查通过。DbgView 显示 NRI 使用 wrapped Device15，未再出现原始 Signal 崩溃或 CBV 错误槽位调用。
+- 成功抓取 `control-resonant_frame16875.rdc`（61,674,601 bytes），缩略图为游戏的光敏警告/Enter 继续页面；`yeecapturecmd replay --loops=1` 返回 0。已验证该启动画面的捕获和回放，未验证完整关卡、光追或帧生成。
+- 诊断输出保存在 `%LOCALAPPDATA%/Temp/YeeCapture/ControlResonantDiag`。Windows 窗口截图工具曾返回桌面壁纸，实际 RDC 缩略图和捕获结果证实游戏正在出帧；不能据该窗口截图判定游戏挂起。
 
 ## 分支结构
 

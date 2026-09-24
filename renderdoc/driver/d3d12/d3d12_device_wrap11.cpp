@@ -30,6 +30,19 @@
 void WrappedID3D12Device::CreateSampler2(const D3D12_SAMPLER_DESC2 *pDesc,
                                          D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
 {
+  CreateSampler2Internal(pDesc, DestDescriptor, false);
+}
+
+HRESULT WrappedID3D12Device::TryCreateSampler2(const D3D12_SAMPLER_DESC2 *pDesc,
+                                               D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
+{
+  return CreateSampler2Internal(pDesc, DestDescriptor, true);
+}
+
+HRESULT WrappedID3D12Device::CreateSampler2Internal(const D3D12_SAMPLER_DESC2 *pDesc,
+                                                    D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor,
+                                                    bool tryCreate)
+{
   bool capframe = false;
 
   {
@@ -37,7 +50,19 @@ void WrappedID3D12Device::CreateSampler2(const D3D12_SAMPLER_DESC2 *pDesc,
     capframe = IsActiveCapturing(m_State);
   }
 
-  SERIALISE_TIME_CALL(m_pDevice11->CreateSampler2(pDesc, Unwrap(DestDescriptor)));
+  HRESULT hr = S_OK;
+  if(tryCreate)
+  {
+    if(!m_pDevice15)
+      return E_NOINTERFACE;
+    SERIALISE_TIME_CALL(hr = m_pDevice15->TryCreateSampler2(pDesc, Unwrap(DestDescriptor)));
+    if(FAILED(hr))
+      return hr;
+  }
+  else
+  {
+    SERIALISE_TIME_CALL(m_pDevice11->CreateSampler2(pDesc, Unwrap(DestDescriptor)));
+  }
 
   // assume descriptors are volatile
   if(capframe)
@@ -57,4 +82,5 @@ void WrappedID3D12Device::CreateSampler2(const D3D12_SAMPLER_DESC2 *pDesc,
   }
 
   GetWrapped(DestDescriptor)->Init(pDesc);
+  return hr;
 }

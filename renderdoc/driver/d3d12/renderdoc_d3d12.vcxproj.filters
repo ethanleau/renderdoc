@@ -36,6 +36,9 @@
     <ClInclude Include="d3d12_device.h">
       <Filter>Core IFaces</Filter>
     </ClInclude>
+    <ClInclude Include="d3d12_device15.h">
+      <Filter>Core IFaces</Filter>
+    </ClInclude>
     <ClInclude Include="d3d12_manager.h">
       <Filter>Util</Filter>
     </ClInclude>
@@ -249,6 +252,9 @@
       <Filter>Wrapped</Filter>
     </ClCompile>
     <ClCompile Include="d3d12_device_wrap14.cpp">
+      <Filter>Wrapped</Filter>
+    </ClCompile>
+    <ClCompile Include="d3d12_device_wrap15.cpp">
       <Filter>Wrapped</Filter>
     </ClCompile>
     <ClCompile Include="d3d12_command_list10_wrap.cpp">

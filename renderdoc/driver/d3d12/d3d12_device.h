@@ -35,6 +35,7 @@
 #include "driver/ihv/nv/nvapi_wrapper.h"
 #include "replay/replay_driver.h"
 #include "d3d12_common.h"
+#include "d3d12_device15.h"
 #include "d3d12_manager.h"
 
 typedef struct D3D11_RESOURCE_FLAGS
@@ -590,7 +591,7 @@ inline void GetDREDContexts(const D3D12_AUTO_BREADCRUMB_NODE1 *node,
   numContexts = node->BreadcrumbContextsCount;
 }
 
-class WrappedID3D12Device : public IFrameCapturer, public ID3DDevice, public ID3D12Device14
+class WrappedID3D12Device : public IFrameCapturer, public ID3DDevice, public ID3D12Device15
 {
 private:
   ID3D12Device *m_pDevice;
@@ -608,6 +609,7 @@ private:
   ID3D12Device12 *m_pDevice12;
   ID3D12Device13 *m_pDevice13;
   ID3D12Device14 *m_pDevice14;
+  ID3D12Device15 *m_pDevice15;
   ID3D12DeviceTools *m_pDeviceTools = NULL;
   ID3D12DeviceTools1 *m_pDeviceTools1 = NULL;
   ID3D12DeviceDownlevel *m_pDownlevel;
@@ -1185,7 +1187,7 @@ public:
        iid == __uuidof(ID3D12Device8) || iid == __uuidof(ID3D12Device9) ||
        iid == __uuidof(ID3D12Device10) || iid == __uuidof(ID3D12Device11) ||
        iid == __uuidof(ID3D12Device12) || iid == __uuidof(ID3D12Device13) ||
-       iid == __uuidof(ID3D12Device14))
+       iid == __uuidof(ID3D12Device14) || iid == __uuidof(ID3D12Device15))
       return true;
 
     return false;
@@ -1222,6 +1224,8 @@ public:
       return (ID3D12Device13 *)this;
     else if(iid == __uuidof(ID3D12Device14))
       return (ID3D12Device14 *)this;
+    else if(iid == __uuidof(ID3D12Device15))
+      return (ID3D12Device15 *)this;
 
     RDCERR("Requested unknown device interface %s", ToStr(iid).c_str());
 
@@ -1342,6 +1346,10 @@ public:
       *ppvDevice = (ID3D12Device14 *)this;
       this->AddRef();
       return S_OK;
+    }
+    else if(riid == __uuidof(ID3D12Device15))
+    {
+      return QueryInterface(riid, ppvDevice);
     }
 
     return E_NOINTERFACE;
@@ -1927,6 +1935,74 @@ public:
                                        _In_reads_(blobLengthInBytes) const void *pLibraryBlob,
                                        _In_ SIZE_T blobLengthInBytes, _In_opt_ LPCWSTR subobjectName,
                                        REFIID riid, _COM_Outptr_ void **ppvRootSignature);
+
+  // Shared descriptor bookkeeping for the void and HRESULT-returning APIs.
+  HRESULT CreateConstantBufferViewInternal(const D3D12_CONSTANT_BUFFER_VIEW_DESC *pDesc,
+                                           D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor,
+                                           bool tryCreate);
+  HRESULT CreateShaderResourceViewInternal(ID3D12Resource *pResource,
+                                           const D3D12_SHADER_RESOURCE_VIEW_DESC *pDesc,
+                                           D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor,
+                                           bool tryCreate);
+  HRESULT CreateUnorderedAccessViewInternal(ID3D12Resource *pResource,
+                                            ID3D12Resource *pCounterResource,
+                                            const D3D12_UNORDERED_ACCESS_VIEW_DESC *pDesc,
+                                            D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor,
+                                            bool tryCreate);
+  HRESULT CreateRenderTargetViewInternal(ID3D12Resource *pResource,
+                                         const D3D12_RENDER_TARGET_VIEW_DESC *pDesc,
+                                         D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor, bool tryCreate);
+  HRESULT CreateDepthStencilViewInternal(ID3D12Resource *pResource,
+                                         const D3D12_DEPTH_STENCIL_VIEW_DESC *pDesc,
+                                         D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor, bool tryCreate);
+  HRESULT CreateSampler2Internal(const D3D12_SAMPLER_DESC2 *pDesc,
+                                 D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor, bool tryCreate);
+
+  // implement ID3D12Device15
+
+  virtual HRESULT STDMETHODCALLTYPE
+  RegisterTrimNotificationCallback(_Inout_ D3D12_REGISTER_TRIM_NOTIFICATION *pData) override;
+
+  virtual HRESULT STDMETHODCALLTYPE UnregisterTrimNotificationCallback(DWORD CallbackCookie) override;
+
+  virtual HRESULT STDMETHODCALLTYPE TryCreateShaderResourceView(
+      _In_opt_ ID3D12Resource *pResource, _In_opt_ const D3D12_SHADER_RESOURCE_VIEW_DESC *pDesc,
+      _In_ D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) override;
+
+  virtual HRESULT STDMETHODCALLTYPE TryCreateUnorderedAccessView(
+      _In_opt_ ID3D12Resource *pResource, _In_opt_ ID3D12Resource *pCounterResource,
+      _In_opt_ const D3D12_UNORDERED_ACCESS_VIEW_DESC *pDesc,
+      _In_ D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) override;
+
+  virtual HRESULT STDMETHODCALLTYPE
+  TryCreateConstantBufferView(_In_opt_ const D3D12_CONSTANT_BUFFER_VIEW_DESC *pDesc,
+                              _In_ D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) override;
+
+  virtual HRESULT STDMETHODCALLTYPE
+  TryCreateSampler2(_In_ const D3D12_SAMPLER_DESC2 *pDesc,
+                    _In_ D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) override;
+
+  virtual HRESULT STDMETHODCALLTYPE TryCreateRenderTargetView(
+      _In_opt_ ID3D12Resource *pResource, _In_opt_ const D3D12_RENDER_TARGET_VIEW_DESC *pDesc,
+      _In_ D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) override;
+
+  virtual HRESULT STDMETHODCALLTYPE TryCreateDepthStencilView(
+      _In_opt_ ID3D12Resource *pResource, _In_opt_ const D3D12_DEPTH_STENCIL_VIEW_DESC *pDesc,
+      _In_ D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) override;
+
+  virtual HRESULT STDMETHODCALLTYPE TryCreateSamplerFeedbackUnorderedAccessView(
+      _In_opt_ ID3D12Resource *pTargetedResource, _In_opt_ ID3D12Resource *pFeedbackResource,
+      _In_ D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) override;
+
+  virtual HRESULT STDMETHODCALLTYPE CreateQueryHeap1(_In_ const D3D12_QUERY_HEAP_DESC *pDesc,
+                                                     _In_ D3D12_QUERY_HEAP_FLAGS Flags,
+                                                     _In_ REFIID riid,
+                                                     _COM_Outptr_ void **ppvHeap) override;
+
+  virtual HRESULT STDMETHODCALLTYPE ResolveQueryData(_In_ ID3D12QueryHeap *pQueryHeap,
+                                                     _In_ D3D12_QUERY_TYPE Type,
+                                                     _In_ UINT StartIndex, _In_ UINT NumQueries,
+                                                     _Inout_ void *pResolvedQueryData) override;
 
   //////////////////////////////
   // implement ID3D12DeviceTools
